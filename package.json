@@ -1,7 +1,8 @@
 {
   "name": "hardhat-project",
   "scripts": {
-    "test": "npx hardhat test"
+    "test": "npx hardhat test",
+    "docker-script": "docker build -t defi-mooc-lab2 . && docker run -e ALCHE_API=$ALCHE_API -it defi-mooc-lab2 npm test"
   },
   "devDependencies": {
     "@nomiclabs/hardhat-ethers": "^2.0.2",
