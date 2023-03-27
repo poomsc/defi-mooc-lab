@@ -1,6 +1,7 @@
 {
   "name": "hardhat-project",
   "scripts": {
+    "compile": "npx hardhat compile",
     "test": "npx hardhat test",
     "docker-script": "docker build -t defi-mooc-lab2 . && docker run -e ALCHE_API=$ALCHE_API -it defi-mooc-lab2 npm test"
   },

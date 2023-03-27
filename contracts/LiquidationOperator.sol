@@ -143,13 +143,15 @@ contract LiquidationOperator is IUniswapV2Callee {
         IUniswapV2Factory(0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f);
     IUniswapV2Pair immutable uniswapV2Pair_WETH_USDT; // Pool1
     IUniswapV2Pair immutable uniswapV2Pair_WBTC_WETH; // Pool2
+    IUniswapV2Pair immutable uniswapV2Pair_WBTC_USDT; // Pool3
 
     ILendingPool constant lendingPool =
         ILendingPool(0x7d2768dE32b0b80b7a3454c06BdAc94A69DDc7A9);
 
-    address constant liquidationTarget =
-        0x59CE4a2AC5bC3f5F225439B2993b86B42f6d3e9F;
-    uint debt_USDT;
+    address liquidationTarget;
+    IUniswapV2Pair uniswapV2Pair_A_B;
+
+    // uint debt_USDT;
 
     // END TODO
 
@@ -200,7 +202,10 @@ contract LiquidationOperator is IUniswapV2Callee {
         uniswapV2Pair_WBTC_WETH = IUniswapV2Pair(
             uniswapV2Factory.getPair(address(WBTC), address(WETH))
         ); // Pool2
-        debt_USDT = 2916378221684;
+        uniswapV2Pair_WBTC_USDT = IUniswapV2Pair(
+            uniswapV2Factory.getPair(address(WBTC), address(USDT))
+        ); // Pool3
+        // debt_USDT = 2916378221684;
 
         // END TODO
     }
@@ -212,14 +217,13 @@ contract LiquidationOperator is IUniswapV2Callee {
     // END TODO
 
     // required by the testing script, entry for your liquidation call
-    function operate() external {
+    function operate(address _token0, address _token1, uint _debt1) external {
         // TODO: implement your liquidation logic
 
         // 0. security checks and initializing variables
-        //    *** Your code here ***
 
         // 1. get the target user account data & make sure it is liquidatable
-        //    *** Your code here ***
+
         uint256 totalCollateralETH;
         uint256 totalDebtETH;
         uint256 availableBorrowsETH;
@@ -239,13 +243,17 @@ contract LiquidationOperator is IUniswapV2Callee {
             "Cannot liquidate; health factor must be below 1"
         );
 
+        uniswapV2Pair_A_B = IUniswapV2Pair(
+            uniswapV2Factory.getPair(_token0, _token1)
+        );
+
         // 2. call flash swap to liquidate the target user
         // based on https://etherscan.io/tx/0xac7df37a43fab1b130318bbb761861b8357650db2e2c6493b73d6da3d9581077
         // we know that the target user borrowed USDT with WBTC as collateral
         // we should borrow USDT, liquidate the target user and get the WBTC, then swap WBTC to repay uniswap
         // (please feel free to develop other workflows as long as they liquidate the target user successfully)
-
-        uniswapV2Pair_WETH_USDT.swap(0, debt_USDT, address(this), "$");
+        bytes memory data = abi.encode(address(uniswapV2Pair_A_B));
+        uniswapV2Pair_A_B.swap(0, _debt1, address(this), data);
 
         // 3. Convert the profit into ETH and send back to sender
 
@@ -257,12 +265,12 @@ contract LiquidationOperator is IUniswapV2Callee {
     }
 
     // required by the swap
-    function uniswapV2Call(
+    function _uniswapV2Call_WETH_USDT(
         address,
         uint256,
         uint256 amount1,
         bytes calldata
-    ) external override {
+    ) private {
         // TODO: implement your liquidation logic
         // 2.0. security checks and initializing variables
 
@@ -281,7 +289,7 @@ contract LiquidationOperator is IUniswapV2Callee {
 
         // 2.1 liquidate the target user
 
-        uint debtToCover = amount1;
+        uint debtToCover = amount1; // => debtToCover = debt_USDT
         USDT.approve(address(lendingPool), debtToCover);
         lendingPool.liquidationCall(
             address(WBTC),
@@ -312,5 +320,89 @@ contract LiquidationOperator is IUniswapV2Callee {
         WETH.transfer(address(uniswapV2Pair_WETH_USDT), repay_WETH);
 
         // END TODO
+    }
+
+    // required by the swap
+    function _uniswapV2Call_WBTC_USDT(
+        address,
+        uint256,
+        uint256 amount1,
+        bytes calldata
+    ) private {
+        // TODO: implement your liquidation logic
+        // 2.0. security checks and initializing variables
+
+        //already check that token0 is WBTC, token1 is USDT : https://etherscan.io/address/0x0DE0Fa91b6DbaB8c8503aAA2D1DFa91a192cB149#readContract
+
+        assert(msg.sender == address(uniswapV2Pair_A_B));
+        assert(address(uniswapV2Pair_WBTC_USDT) == address(uniswapV2Pair_A_B));
+        (
+            uint256 reserve_WBTC_Pool1,
+            uint256 reserve_USDT_Pool1,
+
+        ) = uniswapV2Pair_WBTC_USDT.getReserves();
+
+        (
+            uint256 reserve_WBTC_Pool2,
+            uint256 reserve_WETH_Pool2,
+
+        ) = uniswapV2Pair_WBTC_WETH.getReserves();
+
+        // 2.1 liquidate the target user
+
+        uint debtToCover = amount1; // => debtToCover = debt_USDT
+        USDT.approve(address(lendingPool), debtToCover);
+        lendingPool.liquidationCall(
+            address(WBTC),
+            address(USDT),
+            liquidationTarget,
+            debtToCover,
+            false
+        );
+        // uint collateral_WBTC = WBTC.balanceOf(address(this));
+
+        // 2.2 repay
+
+        uint repay_WBTC = getAmountIn(
+            debtToCover,
+            reserve_WBTC_Pool1,
+            reserve_USDT_Pool1
+        );
+        WBTC.transfer(address(uniswapV2Pair_WBTC_USDT), repay_WBTC);
+
+        // 2.3 convert WBTC to WETH
+
+        uint balance_WBTC = WBTC.balanceOf(address(this));
+        WBTC.transfer(address(uniswapV2Pair_WBTC_WETH), balance_WBTC);
+        uint amountOut_WETH = getAmountOut(
+            balance_WBTC,
+            reserve_WBTC_Pool2,
+            reserve_WETH_Pool2
+        );
+        uniswapV2Pair_WBTC_WETH.swap(0, amountOut_WETH, address(this), "");
+
+        // END TODO
+    }
+
+    // set liquidationTarget and debt_USDT
+    function setLiquidationTarget(address _liquidationTarget) external {
+        liquidationTarget = _liquidationTarget;
+    }
+
+    function uniswapV2Call(
+        address to,
+        uint256 amount0,
+        uint256 amount1,
+        bytes calldata data
+    ) external override {
+        address uniswapV2Pair = abi.decode(data, (address));
+        if (uniswapV2Pair == address(uniswapV2Pair_WETH_USDT)) {
+            _uniswapV2Call_WETH_USDT(to, amount0, amount1, data);
+        }
+        console.log("uniswapV2Pair %s", uniswapV2Pair);
+        if (uniswapV2Pair == address(uniswapV2Pair_WBTC_USDT)) {
+            console.log("Passed");
+            _uniswapV2Call_WBTC_USDT(to, amount0, amount1, data);
+        }
     }
 }
