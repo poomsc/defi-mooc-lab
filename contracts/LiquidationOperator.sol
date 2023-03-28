@@ -138,12 +138,14 @@ contract LiquidationOperator is IUniswapV2Callee {
     IERC20 constant WBTC = IERC20(0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599);
     IWETH constant WETH = IWETH(0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2);
     IERC20 constant USDT = IERC20(0xdAC17F958D2ee523a2206206994597C13D831ec7);
+    IERC20 constant DAI = IERC20(0x6B175474E89094C44Da98b954EedeAC495271d0F);
 
     IUniswapV2Factory constant uniswapV2Factory =
         IUniswapV2Factory(0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f);
     IUniswapV2Pair immutable uniswapV2Pair_WETH_USDT; // Pool1
     IUniswapV2Pair immutable uniswapV2Pair_WBTC_WETH; // Pool2
     IUniswapV2Pair immutable uniswapV2Pair_WBTC_USDT; // Pool3
+    IUniswapV2Pair immutable uniswapV2Pair_DAI_WETH; // Pool4
 
     ILendingPool constant lendingPool =
         ILendingPool(0x7d2768dE32b0b80b7a3454c06BdAc94A69DDc7A9);
@@ -205,6 +207,9 @@ contract LiquidationOperator is IUniswapV2Callee {
         uniswapV2Pair_WBTC_USDT = IUniswapV2Pair(
             uniswapV2Factory.getPair(address(WBTC), address(USDT))
         ); // Pool3
+        uniswapV2Pair_DAI_WETH = IUniswapV2Pair(
+            uniswapV2Factory.getPair(address(WETH), address(DAI))
+        ); // Pool4
         // debt_USDT = 2916378221684;
 
         // END TODO
@@ -217,10 +222,18 @@ contract LiquidationOperator is IUniswapV2Callee {
     // END TODO
 
     // required by the testing script, entry for your liquidation call
-    function operate(address _token0, address _token1, uint _debt1) external {
+    function operate(
+        address _token0,
+        address _token1,
+        uint256 _debt0,
+        uint256 _debt1,
+        address _liquidationTarget
+    ) external {
         // TODO: implement your liquidation logic
 
         // 0. security checks and initializing variables
+
+        liquidationTarget = _liquidationTarget;
 
         // 1. get the target user account data & make sure it is liquidatable
 
@@ -238,6 +251,7 @@ contract LiquidationOperator is IUniswapV2Callee {
             ltv,
             healthFactor
         ) = lendingPool.getUserAccountData(liquidationTarget);
+        console.log("%s %s", liquidationTarget, healthFactor);
         require(
             healthFactor < (10 ** health_factor_decimals),
             "Cannot liquidate; health factor must be below 1"
@@ -253,7 +267,7 @@ contract LiquidationOperator is IUniswapV2Callee {
         // we should borrow USDT, liquidate the target user and get the WBTC, then swap WBTC to repay uniswap
         // (please feel free to develop other workflows as long as they liquidate the target user successfully)
         bytes memory data = abi.encode(address(uniswapV2Pair_A_B));
-        uniswapV2Pair_A_B.swap(0, _debt1, address(this), data);
+        uniswapV2Pair_A_B.swap(_debt0, _debt1, address(this), data);
 
         // 3. Convert the profit into ETH and send back to sender
 
@@ -368,25 +382,67 @@ contract LiquidationOperator is IUniswapV2Callee {
             reserve_WBTC_Pool1,
             reserve_USDT_Pool1
         );
+        console.log("balance_WBTC: %s", WBTC.balanceOf(address(this)));
+        console.log("repay_WBTC: %s", repay_WBTC);
         WBTC.transfer(address(uniswapV2Pair_WBTC_USDT), repay_WBTC);
 
         // 2.3 convert WBTC to WETH
 
         uint balance_WBTC = WBTC.balanceOf(address(this));
-        WBTC.transfer(address(uniswapV2Pair_WBTC_WETH), balance_WBTC);
         uint amountOut_WETH = getAmountOut(
             balance_WBTC,
             reserve_WBTC_Pool2,
             reserve_WETH_Pool2
         );
+        WBTC.transfer(address(uniswapV2Pair_WBTC_WETH), balance_WBTC);
         uniswapV2Pair_WBTC_WETH.swap(0, amountOut_WETH, address(this), "");
 
         // END TODO
     }
 
-    // set liquidationTarget and debt_USDT
-    function setLiquidationTarget(address _liquidationTarget) external {
-        liquidationTarget = _liquidationTarget;
+    // required by the swap
+    function _uniswapV2Call_WETH_DAI(
+        address,
+        uint256 amount0,
+        uint256,
+        bytes calldata
+    ) private {
+        // TODO: implement your liquidation logic
+        // 2.0. security checks and initializing variables
+
+        //already check that token0 is WBTC, token1 is USDT : https://etherscan.io/address/0x0DE0Fa91b6DbaB8c8503aAA2D1DFa91a192cB149#readContract
+
+        assert(msg.sender == address(uniswapV2Pair_A_B));
+        assert(address(uniswapV2Pair_DAI_WETH) == address(uniswapV2Pair_A_B));
+        (
+            uint256 reserve_DAI_Pool,
+            uint256 reserve_WETH_Pool,
+
+        ) = uniswapV2Pair_DAI_WETH.getReserves();
+
+        // 2.1 liquidate the target user
+
+        uint debtToCover = amount0; // => debtToCover = debt_USDT
+        DAI.approve(address(lendingPool), debtToCover);
+        lendingPool.liquidationCall(
+            address(WETH),
+            address(DAI),
+            liquidationTarget,
+            debtToCover,
+            false
+        );
+        // uint collateral_WBTC = WBTC.balanceOf(address(this));
+
+        // 2.2 repay
+
+        uint repay_WETH = getAmountIn(
+            debtToCover,
+            reserve_WETH_Pool,
+            reserve_DAI_Pool
+        );
+        WETH.transfer(address(uniswapV2Pair_DAI_WETH), repay_WETH);
+
+        // END TODO
     }
 
     function uniswapV2Call(
@@ -399,10 +455,20 @@ contract LiquidationOperator is IUniswapV2Callee {
         if (uniswapV2Pair == address(uniswapV2Pair_WETH_USDT)) {
             _uniswapV2Call_WETH_USDT(to, amount0, amount1, data);
         }
-        console.log("uniswapV2Pair %s", uniswapV2Pair);
         if (uniswapV2Pair == address(uniswapV2Pair_WBTC_USDT)) {
-            console.log("Passed");
             _uniswapV2Call_WBTC_USDT(to, amount0, amount1, data);
         }
+        if (uniswapV2Pair == address(uniswapV2Pair_DAI_WETH)) {
+            _uniswapV2Call_WETH_DAI(to, amount0, amount1, data);
+        }
     }
+
+    // function getReserve_DAI_WETH() external {
+    //     (
+    //         uint256 reserve_DAI_Pool,
+    //         uint256 reserve_WETH_Pool,
+
+    //     ) = uniswapV2Pair_DAI_WETH.getReserves();
+    //     console.log("%s %s", reserve_DAI_Pool, reserve_WETH_Pool);
+    // }
 }
