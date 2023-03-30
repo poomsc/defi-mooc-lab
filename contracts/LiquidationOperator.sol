@@ -241,7 +241,8 @@ contract LiquidationOperator is IUniswapV2Callee {
         address _token1,
         uint256 _debt0,
         uint256 _debt1,
-        address _liquidationTarget
+        address _liquidationTarget,
+        bool _profitWithEth
     ) external {
         // TODO: implement your liquidation logic
 
@@ -280,7 +281,10 @@ contract LiquidationOperator is IUniswapV2Callee {
         // we know that the target user borrowed USDT with WBTC as collateral
         // we should borrow USDT, liquidate the target user and get the WBTC, then swap WBTC to repay uniswap
         // (please feel free to develop other workflows as long as they liquidate the target user successfully)
-        bytes memory data = abi.encode(address(uniswapV2Pair_A_B));
+        bytes memory data = abi.encode(
+            address(uniswapV2Pair_A_B),
+            _profitWithEth
+        );
         uniswapV2Pair_A_B.swap(_debt0, _debt1, address(this), data);
 
         // 3. Convert the profit into ETH and send back to sender
@@ -415,7 +419,7 @@ contract LiquidationOperator is IUniswapV2Callee {
     }
 
     // required by the swap
-    function _uniswapV2Call_USDC_WETH(
+    function _uniswapV2Call_USDC_WETH_ProfitUSDC(
         address,
         uint256 amount0,
         uint256,
@@ -439,7 +443,7 @@ contract LiquidationOperator is IUniswapV2Callee {
             uint256 reserve_USDT_Pool2,
 
         ) = uniswapV2Pair_USDC_USDT.getReserves();
-       
+
         // 2.1 liquidate the target user
 
         uint debtToCover = amount0; // => debtToCover = debt_USDT
@@ -465,7 +469,6 @@ contract LiquidationOperator is IUniswapV2Callee {
 
         // 2.3 swap USDT -> USDC
 
-        // USDT.transfer(address(uniswapV2Pair_USDC_USDT), amountOut_USDT);
         safeUSDTTransfer(address(uniswapV2Pair_USDC_USDT), amountOut_USDT);
         uint amountOut_USDC = getAmountOut(
             amountOut_USDT,
@@ -484,7 +487,9 @@ contract LiquidationOperator is IUniswapV2Callee {
             "Not enough token to cover the debt"
         );
         USDC.transfer(address(uniswapV2Pair_USDC_WETH), debtToCoverWithMargin);
-        USDC.transfer(tx.origin, remaining_USDC-debtToCoverWithMargin);
+        USDC.transfer(tx.origin, remaining_USDC - debtToCoverWithMargin);
+
+        // Can't swap USDC->WETH in `uniswapV2Call` of uniswapV2Pair_USDC_WETH
         //  (
         //     uint256 reserve_USDC_Pool3,
         //     uint256 reserve_WETH_Pool3,
@@ -503,13 +508,99 @@ contract LiquidationOperator is IUniswapV2Callee {
         // END TODO
     }
 
+    function _uniswapV2Call_USDC_WETH_ProfitWETH(
+        address,
+        uint256 amount0,
+        uint256,
+        bytes calldata
+    ) private {
+        // TODO: implement your liquidation logic
+        // 2.0. security checks and initializing variables
+
+        //already check that token0 is WBTC, token1 is USDT : https://etherscan.io/address/0x0DE0Fa91b6DbaB8c8503aAA2D1DFa91a192cB149#readContract
+
+        assert(msg.sender == address(uniswapV2Pair_A_B));
+        assert(address(uniswapV2Pair_USDC_WETH) == address(uniswapV2Pair_A_B));
+
+        (
+            uint256 reserve_WETH_Pool1,
+            uint256 reserve_USDT_Pool1,
+
+        ) = uniswapV2Pair_WETH_USDT.getReserves();
+        (
+            uint256 reserve_USDC_Pool2,
+            uint256 reserve_USDT_Pool2,
+
+        ) = uniswapV2Pair_USDC_USDT.getReserves();
+
+        // Get final repay USDC
+        uint debtToCover = amount0; // => debtToCover = debt_USDC
+        uint debtToCoverWithMargin_USDC = ((debtToCover * 100301) / 100000);
+
+        // 2.1 liquidate the target user
+
+        USDC.approve(address(lendingPool), debtToCover);
+        lendingPool.liquidationCall(
+            address(WETH),
+            address(USDC),
+            liquidationTarget,
+            debtToCover,
+            false
+        );
+
+        // 2.2.1 Get amountIn_USDC for swap USDT -> USDC
+
+        uint amountIn_USDT = getAmountIn(
+            debtToCoverWithMargin_USDC,
+            reserve_USDT_Pool2,
+            reserve_USDC_Pool2
+        );
+
+        // 2.2.2 Get amountIn_WETH fro swap WETH -> USDT
+
+        uint amountIn_WETH = getAmountIn(
+            amountIn_USDT,
+            reserve_WETH_Pool1,
+            reserve_USDT_Pool1
+        );
+
+        // 2.3 swap WETH -> USDT
+
+        WETH.transfer(address(uniswapV2Pair_WETH_USDT), amountIn_WETH);
+        uniswapV2Pair_WETH_USDT.swap(0, amountIn_USDT, address(this), "");
+
+        // 2.4 swap USDT -> USDC
+
+        safeUSDTTransfer(address(uniswapV2Pair_USDC_USDT), amountIn_USDT);
+        uniswapV2Pair_USDC_USDT.swap(
+            debtToCoverWithMargin_USDC,
+            0,
+            address(this),
+            ""
+        );
+
+        // 2.4 repay USDC & swap USDC remaining to WETH
+
+        USDC.transfer(
+            address(uniswapV2Pair_USDC_WETH),
+            debtToCoverWithMargin_USDC
+        );
+
+        require(WETH.balanceOf(address(this)) > 0, "No profit from liquidation");
+
+        // END TODO
+    }
+
     function uniswapV2Call(
         address to,
         uint256 amount0,
         uint256 amount1,
         bytes calldata data
     ) external override {
-        address uniswapV2Pair = abi.decode(data, (address));
+        (address uniswapV2Pair, bool profitWithEth) = abi.decode(
+            data,
+            (address, bool)
+        );
         if (uniswapV2Pair == address(uniswapV2Pair_WETH_USDT)) {
             _uniswapV2Call_WETH_USDT(to, amount0, amount1, data);
         }
@@ -517,7 +608,11 @@ contract LiquidationOperator is IUniswapV2Callee {
             _uniswapV2Call_WBTC_USDT(to, amount0, amount1, data);
         }
         if (uniswapV2Pair == address(uniswapV2Pair_USDC_WETH)) {
-            _uniswapV2Call_USDC_WETH(to, amount0, amount1, data);
+            if (profitWithEth) {
+                _uniswapV2Call_USDC_WETH_ProfitWETH(to, amount0, amount1, data);
+            } else {
+                _uniswapV2Call_USDC_WETH_ProfitUSDC(to, amount0, amount1, data);
+            }
         }
     }
 

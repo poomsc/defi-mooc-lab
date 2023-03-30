@@ -49,6 +49,7 @@ describe("Liquidation", function () {
       0,
       2916378221684,
       "0x59CE4a2AC5bC3f5F225439B2993b86B42f6d3e9F",
+      true,
       (overrides = { gasPrice: gasPrice })
     );
     const liquidationReceipt = await liquidationTx.wait();
@@ -131,6 +132,7 @@ describe("Liquidation", function () {
       0,
       2000 * 1e6,
       "0x59CE4a2AC5bC3f5F225439B2993b86B42f6d3e9F",
+      true,
       (overrides = { gasPrice: gasPrice })
     );
     const liquidationReceipt = await liquidationTx.wait();
@@ -213,6 +215,7 @@ describe("Liquidation", function () {
       0,
       5000 * 1e6,
       "0x59CE4a2AC5bC3f5F225439B2993b86B42f6d3e9F",
+      true,
       (overrides = { gasPrice: gasPrice })
     );
     const liquidationReceipt = await liquidationTx.wait();
@@ -296,9 +299,11 @@ describe("Liquidation", function () {
         0,
         10000 * 1e6,
         "0x59CE4a2AC5bC3f5F225439B2993b86B42f6d3e9F",
+        true,
         (overrides = { gasPrice: gasPrice })
       )
     ).to.be.reverted;
+    console.log("Transaction revert, No profit from this liquidation")
 
     // const liquidationTx = await liquidationOperator.operate(
     //   WBTC_ADDRESS,
@@ -349,7 +354,7 @@ describe("Liquidation", function () {
     // // writeFile('profit.txt', String(utils.formatEther(profit)), function (err) {console.log("failed to write profit.txt: %s", err)});
   });
 
-  it("0x63 - USDC_WETH - full USDC", async function () {
+  it("0x63 - USDC_WETH - full USDC - Profit with USDC", async function () {
     await network.provider.request({
       method: "hardhat_reset",
       params: [
@@ -386,7 +391,6 @@ describe("Liquidation", function () {
       (overrides = { gasPrice: gasPrice })
     );
     await liquidationOperator.deployed();
-    // await liquidationOperator.getReserve_DAI_WETH()
 
     const liquidationTx = await liquidationOperator.operate(
       USDC_ADDRESS,
@@ -394,6 +398,7 @@ describe("Liquidation", function () {
       8128956343,
       0,
       "0x63f6037d3e9d51ad865056BF7792029803b6eEfD",
+      false,
       (overrides = { gasPrice: gasPrice })
     );
     const liquidationReceipt = await liquidationTx.wait();
@@ -444,6 +449,90 @@ describe("Liquidation", function () {
       profit.gt(BigNumber.from(0)) || profit_USDC.gt(BigNumber.from(0)),
       "not profitable"
     ).to.be.true;
+    // writeFile('profit.txt', String(utils.formatEther(profit)), function (err) {console.log("failed to write profit.txt: %s", err)});
+  });
+
+  it("0x63 - USDC_WETH - full USDC - Profit with ETH", async function () {
+    await network.provider.request({
+      method: "hardhat_reset",
+      params: [
+        {
+          forking: {
+            jsonRpcUrl: process.env.ALCHE_API,
+            blockNumber: 11946808 - 1,
+          },
+        },
+      ],
+    });
+
+    const gasPrice = 0;
+
+    const accounts = await ethers.getSigners();
+    const liquidator = accounts[0].address;
+
+    const beforeLiquidationBalance = BigNumber.from(
+      await hre.network.provider.request({
+        method: "eth_getBalance",
+        params: [liquidator],
+      })
+    );
+
+    const LiquidationOperator = await ethers.getContractFactory(
+      "LiquidationOperator"
+    );
+    const liquidationOperator = await LiquidationOperator.deploy(
+      (overrides = { gasPrice: gasPrice })
+    );
+    await liquidationOperator.deployed();
+
+    const liquidationTx = await liquidationOperator.operate(
+      USDC_ADDRESS,
+      WETH_ADDRESS,
+      8128956343,
+      0,
+      "0x63f6037d3e9d51ad865056BF7792029803b6eEfD",
+      true,
+      (overrides = { gasPrice: gasPrice })
+    );
+    const liquidationReceipt = await liquidationTx.wait();
+
+    const liquidationEvents = liquidationReceipt.logs.filter(
+      (v) =>
+        v &&
+        v.topics &&
+        v.address === "0x7d2768dE32b0b80b7a3454c06BdAc94A69DDc7A9" &&
+        Array.isArray(v.topics) &&
+        v.topics.length > 3 &&
+        v.topics[0] ===
+          "0xe413a321e8681d831f4dbccbca790d2952b56f977908e45be37335533e005286"
+    );
+
+    const expectedLiquidationEvents = liquidationReceipt.logs.filter(
+      (v) =>
+        v.topics[3] ===
+        "0x00000000000000000000000063f6037d3e9d51ad865056BF7792029803b6eEfD".toLowerCase()
+    );
+
+    expect(
+      expectedLiquidationEvents.length,
+      "no expected liquidation"
+    ).to.be.above(0);
+    expect(liquidationEvents.length, "unexpected liquidation").to.be.equal(
+      expectedLiquidationEvents.length
+    );
+
+    const afterLiquidationBalance = BigNumber.from(
+      await hre.network.provider.request({
+        method: "eth_getBalance",
+        params: [liquidator],
+      })
+    );
+
+    const profit = afterLiquidationBalance.sub(beforeLiquidationBalance);
+
+    console.log("Profit: ", utils.formatEther(profit), "ETH");
+
+    expect(profit.gt(BigNumber.from(0)), "not profitable").to.be.true;
     // writeFile('profit.txt', String(utils.formatEther(profit)), function (err) {console.log("failed to write profit.txt: %s", err)});
   });
 });
