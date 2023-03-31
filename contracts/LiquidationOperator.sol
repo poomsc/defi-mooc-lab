@@ -508,7 +508,7 @@ contract LiquidationOperator is IUniswapV2Callee {
         // END TODO
     }
 
-    function _uniswapV2Call_USDC_WETH_ProfitWETH(
+    function _uniswapV2Call_USDC_WETH_ProfitWETH1(
         address,
         uint256 amount0,
         uint256,
@@ -590,6 +590,52 @@ contract LiquidationOperator is IUniswapV2Callee {
 
         // END TODO
     }
+    
+    function _uniswapV2Call_USDC_WETH_ProfitWETH2(
+        address,
+        uint256 amount0,
+        uint256,
+        bytes calldata
+    ) private {
+        // TODO: implement your liquidation logic
+        // 2.0. security checks and initializing variables
+
+        //already check that token0 is WBTC, token1 is USDT : https://etherscan.io/address/0x0DE0Fa91b6DbaB8c8503aAA2D1DFa91a192cB149#readContract
+
+        assert(msg.sender == address(uniswapV2Pair_A_B));
+        assert(address(uniswapV2Pair_USDC_WETH) == address(uniswapV2Pair_A_B));
+
+        (
+            uint256 reserve_USDC_Pool,
+            uint256 reserve_WETH_Pool,
+        ) = uniswapV2Pair_USDC_WETH.getReserves();
+
+        // Get final repay USDC
+        uint debtToCover = amount0; // => debtToCover = debt_USDC
+
+        // 2.1 liquidate the target user
+
+        USDC.approve(address(lendingPool), debtToCover);
+        lendingPool.liquidationCall(
+            address(WETH),
+            address(USDC),
+            liquidationTarget,
+            debtToCover,
+            false
+        );
+
+        uint amountIn_WETH = getAmountIn(
+            debtToCover,
+            reserve_WETH_Pool,
+            reserve_USDC_Pool
+        );
+
+        WETH.transfer(address(uniswapV2Pair_USDC_WETH), amountIn_WETH);
+       
+        require(WETH.balanceOf(address(this)) > 0, "No profit from liquidation");
+
+        // END TODO
+    }
 
     function uniswapV2Call(
         address to,
@@ -609,7 +655,7 @@ contract LiquidationOperator is IUniswapV2Callee {
         }
         if (uniswapV2Pair == address(uniswapV2Pair_USDC_WETH)) {
             if (profitWithEth) {
-                _uniswapV2Call_USDC_WETH_ProfitWETH(to, amount0, amount1, data);
+                _uniswapV2Call_USDC_WETH_ProfitWETH2(to, amount0, amount1, data);
             } else {
                 _uniswapV2Call_USDC_WETH_ProfitUSDC(to, amount0, amount1, data);
             }
